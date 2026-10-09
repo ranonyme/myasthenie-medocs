@@ -1,5 +1,5 @@
 // Incrementez VERSION a chaque deploiement : l'app se mettra a jour toute seule
-const VERSION="2026.10.09-5";
+const VERSION="2026.10.09-6";
 const CORE=`core-${VERSION}`,RUNTIME="ocr-runtime-v1";
 const FILES=["./","index.html","data.js","brands.js","manifest.webmanifest","icon.svg"];
 

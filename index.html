@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="fr"><head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0b5ed7">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg">
@@ -21,7 +21,7 @@ summary{padding:12px;font-weight:600;cursor:pointer}
 .chip{background:#e8f0fe;border-radius:14px;padding:5px 10px;font-size:.92rem}
 .btn{display:block;width:100%;padding:14px;margin:8px 0;font-size:1rem;border:0;border-radius:10px;background:#0b5ed7;color:#fff}
 .btn.sec{background:#fff;color:#0b5ed7;border:1px solid #0b5ed7}
-video,canvas.prev{width:100%;border-radius:10px;background:#000;display:none}
+canvas.prev{width:100%;border-radius:10px;background:#000;display:none}
 textarea{width:100%;min-height:90px;padding:10px;font-size:.95rem;border-radius:10px;border:1px solid #bbb}
 .res{background:#fff;border-left:6px solid #d33;border-radius:8px;padding:10px;margin:8px 0}
 .res.prob{border-color:#f59f00}.res.ok{border-color:#2f9e44}
@@ -30,6 +30,13 @@ textarea{width:100%;min-height:90px;padding:10px;font-size:.95rem;border-radius:
 .warn{font-size:.85rem;color:#555;background:#fff8e1;padding:10px;border-radius:8px;margin-top:14px}
 #status,#net{font-size:.85rem;color:#555}
 h3{font-size:.95rem;margin:14px 0 4px;color:#555}
+#camov{position:fixed;inset:0;height:100vh;height:100dvh;background:#000;z-index:100;display:none}
+#camov.on{display:block}
+#camov video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+#camx{position:absolute;top:calc(env(safe-area-inset-top,0px) + 12px);right:14px;width:48px;height:48px;border-radius:50%;border:0;background:rgba(0,0,0,.55);color:#fff;font-size:26px;line-height:1;z-index:2}
+#camhint{position:absolute;top:calc(env(safe-area-inset-top,0px) + 22px);left:14px;right:76px;color:#fff;font-size:.85rem;text-shadow:0 1px 3px #000;z-index:2}
+#shot{position:absolute;left:16px;right:16px;bottom:calc(env(safe-area-inset-bottom,0px) + 18px);margin:0;z-index:2;box-shadow:0 2px 10px rgba(0,0,0,.5);font-weight:600}
+body.lock{overflow:hidden}
 </style></head><body>
 <header><h1>Médicaments à utiliser avec précaution – Myasthénie</h1>
 <small>Liste AMIS v<span id="ver"></span> · <span id="net"></span></small></header>
@@ -40,10 +47,8 @@ h3{font-size:.95rem;margin:14px 0 4px;color:#555}
  <p id="count"></p><div id="list"></div>
 </section>
 <section id="s2">
- <video id="vid" playsinline muted></video>
  <canvas class="prev" id="prev"></canvas>
  <button class="btn" id="cam">📷 Ouvrir l'appareil photo</button>
- <button class="btn" id="shot" style="display:none">Capturer et analyser</button>
  <button class="btn sec" id="pick">Choisir / prendre une photo (fichier)</button>
  <input type="file" id="file" accept="image/*" capture="environment" hidden>
  <div id="status"></div>
@@ -55,6 +60,12 @@ h3{font-size:.95rem;margin:14px 0 4px;color:#555}
 </section>
 <p class="warn">Cette liste n'est pas exhaustive et ne remplace pas l'avis d'un médecin ou d'un pharmacien. Un résultat « aucune correspondance » ne garantit pas l'innocuité d'un médicament. Les médicaments génériques portent le nom de la molécule (ex. « ZOPICLONE BIOGARAN »). Les noms commerciaux marqués « à vérifier » n'ont pas été confirmés dans une source officielle. Montrez toujours la liste officielle à vos soignants.</p>
 </main>
+<div id="camov" role="dialog" aria-modal="true" aria-label="Appareil photo">
+ <video id="vid" playsinline muted autoplay></video>
+ <div id="camhint">Cadrez le nom du médicament, bien net et bien éclairé.</div>
+ <button id="camx" aria-label="Annuler">✕</button>
+ <button class="btn" id="shot">📸 Capturer et analyser</button>
+</div>
 <script src="data.js"></script>
 <script src="brands.js"></script>
 <script>
@@ -113,7 +124,7 @@ for(const b of BRANDS){
   SEARCH.push({name:b.b,cat:"Nom commercial",brand:b,w:ws.map(x=>({raw:x,ph:phon(x)}))});
 }
 /* ===== Onglets ===== */
-function tab(n){[1,2].forEach(i=>{$("#s"+i).classList.toggle("on",i===n);$("#t"+i).classList.toggle("on",i===n)});if(n!==2)stopCam()}
+function tab(n){[1,2].forEach(i=>{$("#s"+i).classList.toggle("on",i===n);$("#t"+i).classList.toggle("on",i===n)});if(n!==2&&camOpen)stopCam()}
 $("#t1").onclick=()=>tab(1);$("#t2").onclick=()=>tab(2);
 /* ===== Recherche tolérante ===== */
 function scoreToken(q,qp,entry){
@@ -228,17 +239,29 @@ async function runCompare(){
   }
 }
 $("#cmp").onclick=runCompare;
-/* ===== Caméra + OCR ===== */
-let stream=null;const vid=$("#vid"),prev=$("#prev");
-function stopCam(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}vid.style.display="none";$("#shot").style.display="none"}
+/* ===== Caméra plein écran + OCR ===== */
+let stream=null,camOpen=false;
+const vid=$("#vid"),prev=$("#prev"),ov=$("#camov");
+function stopCam(fromPop){
+  if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}
+  vid.srcObject=null;ov.classList.remove("on");document.body.classList.remove("lock");
+  if(camOpen){camOpen=false;if(!fromPop&&history.state&&history.state.cam)history.back()}
+}
 $("#cam").onclick=async()=>{
-  try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1920}},audio:false});
-    vid.srcObject=stream;await vid.play();vid.style.display="block";prev.style.display="none";$("#shot").style.display="block"}
-  catch(e){$("#status").textContent="Caméra indisponible : utilisez « Choisir / prendre une photo ».";}
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1920},height:{ideal:1080}},audio:false});
+    vid.srcObject=stream;ov.classList.add("on");document.body.classList.add("lock");
+    camOpen=true;history.pushState({cam:1},"");
+    await vid.play();
+  }catch(e){stopCam(true);$("#status").textContent="Caméra indisponible : utilisez « Choisir / prendre une photo ».";}
 };
+$("#camx").onclick=()=>stopCam();
+addEventListener("popstate",()=>{if(camOpen)stopCam(true)});
+addEventListener("keydown",e=>{if(e.key==="Escape"&&camOpen)stopCam()});
 $("#shot").onclick=()=>{
+  if(!vid.videoWidth)return;
   prev.width=vid.videoWidth;prev.height=vid.videoHeight;prev.getContext("2d").drawImage(vid,0,0);
-  stopCam();prev.style.display="block";ocr(prev);
+  stopCam();prev.style.display="block";prev.scrollIntoView({behavior:"smooth",block:"start"});ocr(prev);
 };
 $("#pick").onclick=()=>$("#file").click();
 $("#file").onchange=async e=>{
