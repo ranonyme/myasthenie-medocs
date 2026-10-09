@@ -25,9 +25,10 @@ video,canvas.prev{width:100%;border-radius:10px;background:#000;display:none}
 textarea{width:100%;min-height:90px;padding:10px;font-size:.95rem;border-radius:10px;border:1px solid #bbb}
 .res{background:#fff;border-left:6px solid #d33;border-radius:8px;padding:10px;margin:8px 0}
 .res.prob{border-color:#f59f00}.res.ok{border-color:#2f9e44}
+.tag{display:inline-block;font-size:.72rem;background:#eef;border-radius:8px;padding:1px 7px;margin-left:6px;color:#335}
+.tag.chk{background:#fff3cd;color:#7a5b00}
 .warn{font-size:.85rem;color:#555;background:#fff8e1;padding:10px;border-radius:8px;margin-top:14px}
 #status,#net{font-size:.85rem;color:#555}
-mark{background:#ffe066}
 h3{font-size:.95rem;margin:14px 0 4px;color:#555}
 </style></head><body>
 <header><h1>Médicaments à utiliser avec précaution – Myasthénie</h1>
@@ -35,7 +36,7 @@ h3{font-size:.95rem;margin:14px 0 4px;color:#555}
 <nav><button id="t1" class="on">Liste</button><button id="t2">Scanner</button></nav>
 <main>
 <section id="s1" class="on">
- <input type="search" id="q" placeholder="Rechercher une molécule…" autocomplete="off">
+ <input type="search" id="q" placeholder="Molécule ou nom commercial (ex. Imovane)…" autocomplete="off">
  <p id="count"></p><div id="list"></div>
 </section>
 <section id="s2">
@@ -52,211 +53,219 @@ h3{font-size:.95rem;margin:14px 0 4px;color:#555}
  <label><input type="checkbox" id="srv"> Analyse approfondie par serveur (si configuré)</label>
  <div id="out"></div>
 </section>
-<p class="warn">Cette liste n'est pas exhaustive et ne remplace pas l'avis d'un médecin ou d'un pharmacien. Un résultat « aucune correspondance » ne garantit pas l'innocuité d'un médicament. Montrez toujours la liste officielle à vos soignants.</p>
+<p class="warn">Cette liste n'est pas exhaustive et ne remplace pas l'avis d'un médecin ou d'un pharmacien. Un résultat « aucune correspondance » ne garantit pas l'innocuité d'un médicament. Les médicaments génériques portent le nom de la molécule (ex. « ZOPICLONE BIOGARAN »). Les noms commerciaux marqués « à vérifier » n'ont pas été confirmés dans une source officielle. Montrez toujours la liste officielle à vos soignants.</p>
 </main>
 <script src="data.js"></script>
+<script src="brands.js"></script>
 <script>
-/* ===== CONFIG ===== */
 const CONFIG={
-	SERVER_URL:"",            // ex: "https://mon-serveur.fr/api/analyze" (vide = désactivé)
-	TESSERACT_URL:"https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js",
-	OCR_LANG:"fra+eng"
+  SERVER_URL:"",
+  TESSERACT_URL:"https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js",
+  OCR_LANG:"fra+eng"
 };
-/* ===== Utilitaires ===== */
 const $=s=>document.querySelector(s);
 const norm=s=>s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9\s]/g," ").replace(/\s+/g," ").trim();
-function lev(a,b){const m=a.length,n=b.length;if(!m)return n;let p=Array.from({length:n+1},(_,i)=>i);
- for(let i=1;i<=m;i++){let c=[i];for(let j=1;j<=n;j++)c[j]=Math.min(p[j]+1,c[j-1]+1,p[j-1]+(a[i-1]===b[j-1]?0:1));p=c}return p[n]}
+const phon=s=>norm(s).replace(/ph/g,"f").replace(/ch/g,"k").replace(/th/g,"t").replace(/qu/g,"k")
+  .replace(/c(?=[ei])/g,"s").replace(/[cq]/g,"k").replace(/y/g,"i").replace(/w/g,"v").replace(/z/g,"s")
+  .replace(/h/g,"").replace(/(.)\1+/g,"$1");
+function dl(a,b){
+  const m=a.length,n=b.length,d=[];
+  for(let i=0;i<=m;i++)d[i]=[i];
+  for(let j=1;j<=n;j++)d[0][j]=j;
+  for(let i=1;i<=m;i++)for(let j=1;j<=n;j++){
+    const c=a[i-1]===b[j-1]?0:1;
+    d[i][j]=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+c);
+    if(i>1&&j>1&&a[i-1]===b[j-2]&&a[i-2]===b[j-1])d[i][j]=Math.min(d[i][j],d[i-2][j-2]+1);
+  }
+  return d[m][n];
+}
+function dice(a,b){
+  if(a.length<2||b.length<2)return 0;
+  const g=s=>{const r=new Map();for(let i=0;i<s.length-1;i++){const k=s.substr(i,2);r.set(k,(r.get(k)||0)+1)}return r};
+  const A=g(a),B=g(b);let inter=0;
+  for(const [k,v] of A)inter+=Math.min(v,B.get(k)||0);
+  return 2*inter/((a.length-1)+(b.length-1));
+}
+const tol=len=>len<=3?0:len<=5?1:len<=8?2:Math.max(3,Math.floor(len*0.34));
 $("#ver").textContent=LIST_VERSION;
 const upNet=()=>$("#net").textContent=navigator.onLine?"en ligne":"hors ligne";
 addEventListener("online",upNet);addEventListener("offline",upNet);upNet();
 
-/* ===== Index de recherche ===== */
+/* ===== Index ===== */
+const DCI2CAT={};for(const [c,a] of Object.entries(MOLECULES))for(const n of a)DCI2CAT[n]=c;
+const BR_BY_DCI={};for(const b of BRANDS)for(const d of b.d)(BR_BY_DCI[d]=BR_BY_DCI[d]||[]).push(b);
 const STOP=new Set(["de","d","du","per","os","iv","mg","en","et","patch","patchs","injectable","fumarate","maleate","dimaleate","iodure","bromure","methylbromure","napadisilate","metiodure","triiodoethylate","meglumine","ethyle","pidolate"]);
 const INDEX=[];
 for(const [cat,arr] of Object.entries(MOLECULES))for(const name of arr){
-	const keys=new Set((ALIASES[name]||[]).map(norm));
-	const first=norm(name).split(" ").find(w=>w.length>=3&&!STOP.has(w));
-	if(first&&!ALIASES[name])keys.add(first);
-	INDEX.push({name,cat,keys:[...keys],full:norm(name)});
+  const keys=new Set((ALIASES[name]||[]).map(norm));
+  const first=norm(name).split(" ").find(w=>w.length>=3&&!STOP.has(w));
+  if(first&&!ALIASES[name])keys.add(first);
+  INDEX.push({name,cat,keys:[...keys]});
+}
+const BINDEX=BRANDS.map(b=>({...b,bn:norm(b.b),words:norm(b.b).split(" ")}));
+const SEARCH=[];
+for(const [cat,arr] of Object.entries(MOLECULES))for(const name of arr){
+  const ws=new Set([...norm(name).split(" "),...(ALIASES[name]||[]).map(norm)]);
+  SEARCH.push({name,cat,w:[...ws].filter(x=>x.length>=2).map(x=>({raw:x,ph:phon(x)}))});
+}
+for(const b of BRANDS){
+  const ws=[...new Set(norm(b.b).split(" "))].filter(x=>x.length>=2);
+  SEARCH.push({name:b.b,cat:"Nom commercial",brand:b,w:ws.map(x=>({raw:x,ph:phon(x)}))});
 }
 /* ===== Onglets ===== */
 function tab(n){[1,2].forEach(i=>{$("#s"+i).classList.toggle("on",i===n);$("#t"+i).classList.toggle("on",i===n)});if(n!==2)stopCam()}
 $("#t1").onclick=()=>tab(1);$("#t2").onclick=()=>tab(2);
-/* ===== Liste ===== */
 /* ===== Recherche tolérante ===== */
-// Normalisation phonétique "à la française" : rapproche les variantes d'écriture
-const phon=s=>norm(s)
-	.replace(/ph/g,"f").replace(/ch/g,"k").replace(/th/g,"t").replace(/qu/g,"k")
-	.replace(/c(?=[ei])/g,"s").replace(/[cq]/g,"k")
-	.replace(/y/g,"i").replace(/w/g,"v").replace(/z/g,"s")
-	.replace(/h/g,"").replace(/(.)\1+/g,"$1");
-
-// Distance de Damerau-Levenshtein (gère les lettres inversées : "trobamycine")
-function dl(a,b){
-	const m=a.length,n=b.length,d=[];
-	for(let i=0;i<=m;i++){d[i]=[i];}
-	for(let j=1;j<=n;j++)d[0][j]=j;
-	for(let i=1;i<=m;i++)for(let j=1;j<=n;j++){
-		const c=a[i-1]===b[j-1]?0:1;
-		d[i][j]=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+c);
-		if(i>1&&j>1&&a[i-1]===b[j-2]&&a[i-2]===b[j-1])d[i][j]=Math.min(d[i][j],d[i-2][j-2]+1);
-	}
-	return d[m][n];
-}
-// Similarité par bigrammes (Dice) : rattrape les mots très déformés
-function dice(a,b){
-	if(a.length<2||b.length<2)return 0;
-	const g=s=>{const r=new Map();for(let i=0;i<s.length-1;i++){const k=s.substr(i,2);r.set(k,(r.get(k)||0)+1)}return r};
-	const A=g(a),B=g(b);let inter=0;
-	for(const [k,v] of A)inter+=Math.min(v,B.get(k)||0);
-	return 2*inter/((a.length-1)+(b.length-1));
-}
-const tol=len=>len<=3?0:len<=5?1:len<=8?2:Math.max(3,Math.floor(len*0.34));
-
-// Prépare les mots de chaque entrée (nom complet + alias)
-const SEARCH=[];
-for(const [cat,arr] of Object.entries(MOLECULES))for(const name of arr){
-	const words=new Set([...norm(name).split(" "),...(ALIASES[name]||[]).map(norm)]);
-	const w=[...words].filter(x=>x.length>=2).map(x=>({raw:x,ph:phon(x)}));
-	SEARCH.push({name,cat,w,full:norm(name),fullPh:phon(name)});
-}
-// Score d'un mot saisi contre les mots d'une entrée (null = pas de correspondance)
 function scoreToken(q,qp,entry){
-	let best=null;const upd=s=>{if(best===null||s<best)best=s};
-	const t=tol(qp.length);
-	for(const {raw,ph} of entry.w){
-		if(raw===q)upd(0);
-		else if(raw.startsWith(q))upd(0.5);
-		else if(raw.includes(q)&&q.length>=3)upd(1);
-		if(ph===qp)upd(1.5);
-		else if(ph.startsWith(qp)&&qp.length>=2)upd(2);
-		if(qp.length>=3){
-			const d=dl(qp,ph);if(d<=t)upd(3+d);
-			// saisie partielle avec faute : comparer au début du mot
-			if(qp.length>=4&&ph.length>qp.length){
-				const dp=dl(qp,ph.slice(0,qp.length));if(dp<=Math.min(t,1+(qp.length>6?1:0)))upd(4+dp);
-			}
-			if(qp.length>=5){const s=dice(qp,ph);if(s>=0.6)upd(8-s*3)}
-		}
-	}
-	return best;
+  let best=null;const upd=s=>{if(best===null||s<best)best=s};
+  const t=tol(qp.length);
+  for(const {raw,ph} of entry.w){
+    if(raw===q)upd(0);
+    else if(raw.startsWith(q))upd(0.5);
+    else if(raw.includes(q)&&q.length>=3)upd(1);
+    if(ph===qp)upd(1.5);
+    else if(ph.startsWith(qp)&&qp.length>=2)upd(2);
+    if(qp.length>=3){
+      const d=dl(qp,ph);if(d<=t)upd(3+d);
+      if(qp.length>=4&&ph.length>qp.length){
+        const dp=dl(qp,ph.slice(0,qp.length));if(dp<=Math.min(t,1+(qp.length>6?1:0)))upd(4+dp);
+      }
+      if(qp.length>=5){const s=dice(qp,ph);if(s>=0.6)upd(8-s*3)}
+    }
+  }
+  return best;
 }
 function search(query){
-	const toks=norm(query).split(" ").filter(Boolean);
-	if(!toks.length)return null;
-	const out=[];
-	for(const e of SEARCH){
-		let total=0,ok=true;
-		for(const q of toks){
-			const s=scoreToken(q,phon(q),e);
-			if(s===null){ok=false;break}
-			total+=s;
-		}
-		if(ok)out.push({...e,score:total});
-	}
-	return out.sort((a,b)=>a.score-b.score||a.name.localeCompare(b.name,"fr"));
+  const toks=norm(query).split(" ").filter(Boolean);
+  if(!toks.length)return null;
+  const out=[];
+  for(const e of SEARCH){
+    let total=0,ok=true;
+    for(const q of toks){const s=scoreToken(q,phon(q),e);if(s===null){ok=false;break}total+=s}
+    if(ok)out.push({...e,score:total});
+  }
+  return out.sort((a,b)=>a.score-b.score||(a.brand?1:0)-(b.brand?1:0)||a.name.localeCompare(b.name,"fr"));
 }
-/* ===== Affichage ===== */
+const chk=b=>b.v?"":'<span class="tag chk">à vérifier</span>';
+function itemHTML(r){
+  const cls=r.score<3?"":"prob";
+  if(r.brand){
+    const b=r.brand;
+    return `<div class="res ${cls}"><b>${b.b}</b><span class="tag">nom commercial</span>${chk(b)}<br><small>Contient : ${b.d.join(", ")} · ${[...new Set(b.d.map(d=>DCI2CAT[d]))].join(", ")}</small></div>`;
+  }
+  const brs=(BR_BY_DCI[r.name]||[]).slice(0,10);
+  return `<div class="res ${cls}"><b>${r.name}</b><br><small>${r.cat}</small>${brs.length?`<br><small>Noms commerciaux : ${brs.map(b=>b.b).join(", ")}</small>`:""}</div>`;
+}
 function renderList(f=""){
-	const box=$("#list");box.innerHTML="";
-	if(f.trim()){
-		const res=search(f)||[];
-		$("#count").textContent=res.length?res.length+" résultat(s)":"Aucun résultat. Essayez une autre orthographe ou quelques lettres.";
-		const exact=res.filter(r=>r.score<3),approx=res.filter(r=>r.score>=3);
-		const block=(title,arr)=>arr.length&&(box.insertAdjacentHTML("beforeend",
-			`${title?`<h3>${title}</h3>`:""}`+arr.map(r=>`<div class="res ${r.score<3?"":"prob"}"><b>${r.name}</b><br><small>${r.cat}</small></div>`).join("")));
-		block("",exact);block(approx.length&&exact.length?"Orthographes proches":"Résultats approchés",approx);
-		return;
-	}
-	let total=0;
-	for(const [cat,arr] of Object.entries(MOLECULES)){
-		total+=arr.length;
-		const d=document.createElement("details");
-		d.innerHTML=`<summary>${cat} (${arr.length})</summary><div class="chips">${arr.map(n=>`<span class="chip">${n}</span>`).join("")}</div>`;
-		box.appendChild(d);
-	}
-	$("#count").textContent=total+" entrées";
+  const box=$("#list");box.innerHTML="";
+  if(f.trim()){
+    const res=search(f)||[];
+    $("#count").textContent=res.length?res.length+" résultat(s)":"Aucun résultat. Essayez une autre orthographe ou quelques lettres.";
+    const ex=res.filter(r=>r.score<3),ap=res.filter(r=>r.score>=3);
+    if(ex.length)box.insertAdjacentHTML("beforeend",ex.map(itemHTML).join(""));
+    if(ap.length)box.insertAdjacentHTML("beforeend",`<h3>${ex.length?"Orthographes proches":"Résultats approchés"}</h3>`+ap.map(itemHTML).join(""));
+    return;
+  }
+  let total=0;
+  for(const [cat,arr] of Object.entries(MOLECULES)){
+    total+=arr.length;
+    const d=document.createElement("details");
+    d.innerHTML=`<summary>${cat} (${arr.length})</summary><div class="chips">${arr.map(n=>`<span class="chip">${n}</span>`).join("")}</div>`;
+    box.appendChild(d);
+  }
+  $("#count").textContent=total+" entrées · "+BRANDS.length+" noms commerciaux";
 }
 let qt;$("#q").oninput=e=>{clearTimeout(qt);qt=setTimeout(()=>renderList(e.target.value),120)};
 renderList();
-/* ===== Comparaison locale ===== */
-function compareLocal(text){
-	const toks=[...new Set(norm(text).split(" ").filter(t=>t.length>=3))];
-	const found=new Map();
-	for(const m of INDEX)for(const k of m.keys){
-		for(const t of toks){
-			let lvl=null;
-			if(t===k)lvl="certain";
-			else if(k.length>=5&&Math.abs(t.length-k.length)<=2){
-				const d=lev(t,k),max=k.length>=9?2:1;if(d<=max)lvl="probable";
-			}
-			if(lvl&&(!found.has(m.name)||lvl==="certain"))found.set(m.name,{...m,lvl,token:t});
-		}
-	}
-	return [...found.values()].sort((a,b)=>(a.lvl>b.lvl?-1:1));
+/* ===== Comparaison OCR ===== */
+const RANK={certain:2,probable:1};
+function matchWord(t,k){
+  if(t===k)return "certain";
+  if(k.length>=5&&Math.abs(t.length-k.length)<=2&&dl(t,k)<=(k.length>=9?2:1))return "probable";
+  return null;
 }
-/* ===== Serveur (optionnel) ===== */
+function compareLocal(text){
+  const nt=norm(text),toks=[...new Set(nt.split(" ").filter(t=>t.length>=3))],padded=" "+nt+" ";
+  const found=new Map();
+  const add=(key,o)=>{const p=found.get(key);if(!p||RANK[o.lvl]>RANK[p.lvl])found.set(key,o)};
+  for(const m of INDEX)for(const k of m.keys)for(const t of toks){
+    const l=matchWord(t,k);if(l)add("M:"+m.name,{kind:"mol",name:m.name,cat:m.cat,lvl:l,token:t});
+  }
+  for(const b of BINDEX){
+    if(b.words.length>1){
+      if(padded.includes(" "+b.bn+" "))add("B:"+b.b,{kind:"brand",name:b.b,b,lvl:"certain",token:b.bn});
+      continue;
+    }
+    for(const t of toks){
+      const l=matchWord(t,b.bn);if(l)add("B:"+b.b,{kind:"brand",name:b.b,b,lvl:l,token:t});
+    }
+  }
+  return [...found.values()].sort((a,b)=>RANK[b.lvl]-RANK[a.lvl]||(a.kind>b.kind?-1:1)||a.name.localeCompare(b.name,"fr"));
+}
 async function compareServer(text,local){
-	if(!CONFIG.SERVER_URL||!navigator.onLine)return null;
-	try{
-		const r=await fetch(CONFIG.SERVER_URL,{method:"POST",headers:{"Content-Type":"application/json"},
-			body:JSON.stringify({text,listVersion:LIST_VERSION,localMatches:local.map(m=>m.name)})});
-		if(!r.ok)throw 0;return await r.json(); // attendu: {matches:[{name,category,confidence,note}]}
-	}catch(e){return null}
+  if(!CONFIG.SERVER_URL||!navigator.onLine)return null;
+  try{
+    const r=await fetch(CONFIG.SERVER_URL,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({text,listVersion:LIST_VERSION,brandsVersion:BRANDS_VERSION,localMatches:local.map(m=>m.name)})});
+    if(!r.ok)throw 0;return await r.json();
+  }catch(e){return null}
 }
 async function runCompare(){
-	const text=$("#txt").value;if(!text.trim()){$("#out").innerHTML="<p>Aucun texte à analyser.</p>";return}
-	const loc=compareLocal(text);let html="";
-	if(!loc.length)html+=`<div class="res ok"><b>Aucune molécule de la liste détectée</b> dans ce texte (analyse locale). Vérifiez la netteté de la photo.</div>`;
-	for(const m of loc)html+=`<div class="res ${m.lvl==="probable"?"prob":""}"><b>${m.name}</b> – ${m.cat}<br><small>${m.lvl==="certain"?"Correspondance exacte":"Correspondance probable"} (« ${m.token} »)</small></div>`;
-	$("#out").innerHTML=html;
-	if($("#srv").checked){
-		$("#out").insertAdjacentHTML("beforeend","<p id='sv'>Analyse serveur…</p>");
-		const s=await compareServer(text,loc);
-		$("#sv").outerHTML=s?.matches?.length?"<h3>Analyse serveur</h3>"+s.matches.map(m=>`<div class="res prob"><b>${m.name}</b> – ${m.category||""}<br><small>${m.note||""} ${m.confidence??""}</small></div>`).join(""):"<p><small>Serveur indisponible ou non configuré : résultat local uniquement.</small></p>";
-	}
+  const text=$("#txt").value;if(!text.trim()){$("#out").innerHTML="<p>Aucun texte à analyser.</p>";return}
+  const loc=compareLocal(text);let html="";
+  if(!loc.length)html+=`<div class="res ok"><b>Aucune molécule ni nom commercial de la liste détecté</b> dans ce texte (analyse locale). Vérifiez la netteté de la photo.</div>`;
+  for(const m of loc){
+    const cls=m.lvl==="probable"?"prob":"";
+    const lv=m.lvl==="certain"?"Correspondance exacte":"Correspondance probable";
+    if(m.kind==="brand")html+=`<div class="res ${cls}"><b>${m.name}</b><span class="tag">nom commercial</span>${chk(m.b)}<br><small>Contient : ${m.b.d.join(", ")} · ${lv} (« ${m.token} »)</small></div>`;
+    else html+=`<div class="res ${cls}"><b>${m.name}</b> – ${m.cat}<br><small>${lv} (« ${m.token} »)</small></div>`;
+  }
+  $("#out").innerHTML=html;
+  if($("#srv").checked){
+    $("#out").insertAdjacentHTML("beforeend","<p id='sv'>Analyse serveur…</p>");
+    const s=await compareServer(text,loc);
+    $("#sv").outerHTML=s?.matches?.length?"<h3>Analyse serveur</h3>"+s.matches.map(m=>`<div class="res prob"><b>${m.name}</b> – ${m.category||""}<br><small>${m.note||""} ${m.confidence??""}</small></div>`).join(""):"<p><small>Serveur indisponible ou non configuré : résultat local uniquement.</small></p>";
+  }
 }
 $("#cmp").onclick=runCompare;
 /* ===== Caméra + OCR ===== */
 let stream=null;const vid=$("#vid"),prev=$("#prev");
 function stopCam(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}vid.style.display="none";$("#shot").style.display="none"}
 $("#cam").onclick=async()=>{
-	try{stream=await navigator.mediaDevices.getUserMedia({video:{facetingMode:"environment",facingMode:{ideal:"environment"},width:{ideal:1920}},audio:false});
-		vid.srcObject=stream;await vid.play();vid.style.display="block";prev.style.display="none";$("#shot").style.display="block"}
-	catch(e){$("#status").textContent="Caméra indisponible : utilisez « Choisir / prendre une photo ».";}
+  try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1920}},audio:false});
+    vid.srcObject=stream;await vid.play();vid.style.display="block";prev.style.display="none";$("#shot").style.display="block"}
+  catch(e){$("#status").textContent="Caméra indisponible : utilisez « Choisir / prendre une photo ».";}
 };
 $("#shot").onclick=()=>{
-	prev.width=vid.videoWidth;prev.height=vid.videoHeight;prev.getContext("2d").drawImage(vid,0,0);
-	stopCam();prev.style.display="block";ocr(prev);
+  prev.width=vid.videoWidth;prev.height=vid.videoHeight;prev.getContext("2d").drawImage(vid,0,0);
+  stopCam();prev.style.display="block";ocr(prev);
 };
 $("#pick").onclick=()=>$("#file").click();
 $("#file").onchange=async e=>{
-	const f=e.target.files[0];if(!f)return;
-	const bmp=await createImageBitmap(f);const sc=Math.min(1,2000/Math.max(bmp.width,bmp.height));
-	prev.width=bmp.width*sc;prev.height=bmp.height*sc;prev.getContext("2d").drawImage(bmp,0,0,prev.width,prev.height);
-	prev.style.display="block";ocr(prev);
+  const f=e.target.files[0];if(!f)return;
+  const bmp=await createImageBitmap(f);const sc=Math.min(1,2000/Math.max(bmp.width,bmp.height));
+  prev.width=bmp.width*sc;prev.height=bmp.height*sc;prev.getContext("2d").drawImage(bmp,0,0,prev.width,prev.height);
+  prev.style.display="block";ocr(prev);
 };
 function loadScript(src){return new Promise((ok,ko)=>{if(window.Tesseract)return ok();const s=document.createElement("script");s.src=src;s.onload=ok;s.onerror=ko;document.head.appendChild(s)})}
 async function ocr(canvas){
-	const st=$("#status");
-	try{
-		st.textContent="Chargement du moteur OCR…";await loadScript(CONFIG.TESSERACT_URL);
-		const w=await Tesseract.createWorker(CONFIG.OCR_LANG,1,{logger:m=>{if(m.status)st.textContent=m.status+" "+Math.round((m.progress||0)*100)+"%"}});
-		const {data}=await w.recognize(canvas);await w.terminate();
-		$("#txt").value=data.text;st.textContent="Texte reconnu. Comparaison…";runCompare();st.textContent="Terminé.";
-	}catch(e){st.textContent="OCR indisponible (moteur non encore mis en cache ? connectez-vous une première fois). Vous pouvez saisir le texte à la main.";}
+  const st=$("#status");
+  try{
+    st.textContent="Chargement du moteur OCR…";await loadScript(CONFIG.TESSERACT_URL);
+    const w=await Tesseract.createWorker(CONFIG.OCR_LANG,1,{logger:m=>{if(m.status)st.textContent=m.status+" "+Math.round((m.progress||0)*100)+"%"}});
+    const {data}=await w.recognize(canvas);await w.terminate();
+    $("#txt").value=data.text;st.textContent="Texte reconnu. Comparaison…";runCompare();st.textContent="Terminé.";
+  }catch(e){st.textContent="OCR indisponible (moteur non encore mis en cache ? connectez-vous une première fois). Vous pouvez saisir le texte à la main.";}
 }
 /* ===== Service worker + mise à jour auto ===== */
 if("serviceWorker"in navigator){
-	addEventListener("load",async()=>{
-		const reg=await navigator.serviceWorker.register("sw.js");
-		const check=()=>navigator.onLine&&reg.update().catch(()=>{});
-		check();setInterval(check,30*60*1000);document.addEventListener("visibilitychange",()=>!document.hidden&&check());
-		let had=!!navigator.serviceWorker.controller;
-		navigator.serviceWorker.addEventListener("controllerchange",()=>{if(had)location.reload();had=true});
-		// préchauffe le cache OCR en ligne
-		if(navigator.onLine)setTimeout(()=>loadScript(CONFIG.TESSERACT_URL).then(()=>Tesseract.createWorker(CONFIG.OCR_LANG)).then(w=>w.terminate()).catch(()=>{}),4000);
-	});
+  addEventListener("load",async()=>{
+    const reg=await navigator.serviceWorker.register("sw.js");
+    const check=()=>navigator.onLine&&reg.update().catch(()=>{});
+    check();setInterval(check,30*60*1000);document.addEventListener("visibilitychange",()=>!document.hidden&&check());
+    let had=!!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener("controllerchange",()=>{if(had)location.reload();had=true});
+    if(navigator.onLine)setTimeout(()=>loadScript(CONFIG.TESSERACT_URL).then(()=>Tesseract.createWorker(CONFIG.OCR_LANG)).then(w=>w.terminate()).catch(()=>{}),4000);
+  });
 }
 </script></body></html>
