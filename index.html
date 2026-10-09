@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="fr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0b5ed7">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg">
+<title>Myasthénie – Médicaments</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font:16px system-ui,sans-serif;background:#f4f6fa;color:#1b1f27}
+header{background:#0b5ed7;color:#fff;padding:12px 14px;position:sticky;top:0;z-index:5}
+header h1{margin:0;font-size:1.05rem}header small{opacity:.85}
+nav{display:flex;background:#fff;border-bottom:1px solid #ddd;position:sticky;top:58px;z-index:4}
+nav button{flex:1;padding:12px;border:0;background:none;font-size:1rem;border-bottom:3px solid transparent}
+nav button.on{border-color:#0b5ed7;color:#0b5ed7;font-weight:600}
+main{padding:12px;max-width:720px;margin:auto}section{display:none}section.on{display:block}
+input[type=search]{width:100%;padding:12px;font-size:1rem;border:1px solid #bbb;border-radius:10px}
+details{background:#fff;border-radius:10px;margin:8px 0;box-shadow:0 1px 2px #0002}
+summary{padding:12px;font-weight:600;cursor:pointer}
+.chips{display:flex;flex-wrap:wrap;gap:6px;padding:0 12px 12px}
+.chip{background:#e8f0fe;border-radius:14px;padding:5px 10px;font-size:.92rem}
+.btn{display:block;width:100%;padding:14px;margin:8px 0;font-size:1rem;border:0;border-radius:10px;background:#0b5ed7;color:#fff}
+.btn.sec{background:#fff;color:#0b5ed7;border:1px solid #0b5ed7}
+video,canvas.prev{width:100%;border-radius:10px;background:#000;display:none}
+textarea{width:100%;min-height:90px;padding:10px;font-size:.95rem;border-radius:10px;border:1px solid #bbb}
+.res{background:#fff;border-left:6px solid #d33;border-radius:8px;padding:10px;margin:8px 0}
+.res.prob{border-color:#f59f00}.res.ok{border-color:#2f9e44}
+.warn{font-size:.85rem;color:#555;background:#fff8e1;padding:10px;border-radius:8px;margin-top:14px}
+#status,#net{font-size:.85rem;color:#555}
+mark{background:#ffe066}
+h3{font-size:.95rem;margin:14px 0 4px;color:#555}
+</style></head><body>
+<header><h1>Médicaments à utiliser avec précaution – Myasthénie</h1>
+<small>Liste AMIS v<span id="ver"></span> · <span id="net"></span></small></header>
+<nav><button id="t1" class="on">Liste</button><button id="t2">Scanner</button></nav>
+<main>
+<section id="s1" class="on">
+ <input type="search" id="q" placeholder="Rechercher une molécule…" autocomplete="off">
+ <p id="count"></p><div id="list"></div>
+</section>
+<section id="s2">
+ <video id="vid" playsinline muted></video>
+ <canvas class="prev" id="prev"></canvas>
+ <button class="btn" id="cam">📷 Ouvrir l'appareil photo</button>
+ <button class="btn" id="shot" style="display:none">Capturer et analyser</button>
+ <button class="btn sec" id="pick">Choisir / prendre une photo (fichier)</button>
+ <input type="file" id="file" accept="image/*" capture="environment" hidden>
+ <div id="status"></div>
+ <label>Texte reconnu (modifiable) :</label>
+ <textarea id="txt" placeholder="Le texte OCR apparaît ici. Vous pouvez aussi coller/saisir du texte."></textarea>
+ <button class="btn sec" id="cmp">Comparer avec la liste</button>
+ <label><input type="checkbox" id="srv"> Analyse approfondie par serveur (si configuré)</label>
+ <div id="out"></div>
+</section>
+<p class="warn">Cette liste n'est pas exhaustive et ne remplace pas l'avis d'un médecin ou d'un pharmacien. Un résultat « aucune correspondance » ne garantit pas l'innocuité d'un médicament. Montrez toujours la liste officielle à vos soignants.</p>
+</main>
+<script src="data.js"></script>
+<script>
+/* ===== CONFIG ===== */
+const CONFIG={
+	SERVER_URL:"",            // ex: "https://mon-serveur.fr/api/analyze" (vide = désactivé)
+	TESSERACT_URL:"https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js",
+	OCR_LANG:"fra+eng"
+};
+/* ===== Utilitaires ===== */
+const $=s=>document.querySelector(s);
+const norm=s=>s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9\s]/g," ").replace(/\s+/g," ").trim();
+function lev(a,b){const m=a.length,n=b.length;if(!m)return n;let p=Array.from({length:n+1},(_,i)=>i);
+ for(let i=1;i<=m;i++){let c=[i];for(let j=1;j<=n;j++)c[j]=Math.min(p[j]+1,c[j-1]+1,p[j-1]+(a[i-1]===b[j-1]?0:1));p=c}return p[n]}
+$("#ver").textContent=LIST_VERSION;
+const upNet=()=>$("#net").textContent=navigator.onLine?"en ligne":"hors ligne";
+addEventListener("online",upNet);addEventListener("offline",upNet);upNet();
+
+/* ===== Index de recherche ===== */
+const STOP=new Set(["de","d","du","per","os","iv","mg","en","et","patch","patchs","injectable","fumarate","maleate","dimaleate","iodure","bromure","methylbromure","napadisilate","metiodure","triiodoethylate","meglumine","ethyle","pidolate"]);
+const INDEX=[];
+for(const [cat,arr] of Object.entries(MOLECULES))for(const name of arr){
+	const keys=new Set((ALIASES[name]||[]).map(norm));
+	const first=norm(name).split(" ").find(w=>w.length>=3&&!STOP.has(w));
+	if(first&&!ALIASES[name])keys.add(first);
+	INDEX.push({name,cat,keys:[...keys],full:norm(name)});
+}
+/* ===== Onglets ===== */
+function tab(n){[1,2].forEach(i=>{$("#s"+i).classList.toggle("on",i===n);$("#t"+i).classList.toggle("on",i===n)});if(n!==2)stopCam()}
+$("#t1").onclick=()=>tab(1);$("#t2").onclick=()=>tab(2);
+/* ===== Liste ===== */
+/* ===== Recherche tolérante ===== */
+// Normalisation phonétique "à la française" : rapproche les variantes d'écriture
+const phon=s=>norm(s)
+	.replace(/ph/g,"f").replace(/ch/g,"k").replace(/th/g,"t").replace(/qu/g,"k")
+	.replace(/c(?=[ei])/g,"s").replace(/[cq]/g,"k")
+	.replace(/y/g,"i").replace(/w/g,"v").replace(/z/g,"s")
+	.replace(/h/g,"").replace(/(.)\1+/g,"$1");
+
+// Distance de Damerau-Levenshtein (gère les lettres inversées : "trobamycine")
+function dl(a,b){
+	const m=a.length,n=b.length,d=[];
+	for(let i=0;i<=m;i++){d[i]=[i];}
+	for(let j=1;j<=n;j++)d[0][j]=j;
+	for(let i=1;i<=m;i++)for(let j=1;j<=n;j++){
+		const c=a[i-1]===b[j-1]?0:1;
+		d[i][j]=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+c);
+		if(i>1&&j>1&&a[i-1]===b[j-2]&&a[i-2]===b[j-1])d[i][j]=Math.min(d[i][j],d[i-2][j-2]+1);
+	}
+	return d[m][n];
+}
+// Similarité par bigrammes (Dice) : rattrape les mots très déformés
+function dice(a,b){
+	if(a.length<2||b.length<2)return 0;
+	const g=s=>{const r=new Map();for(let i=0;i<s.length-1;i++){const k=s.substr(i,2);r.set(k,(r.get(k)||0)+1)}return r};
+	const A=g(a),B=g(b);let inter=0;
+	for(const [k,v] of A)inter+=Math.min(v,B.get(k)||0);
+	return 2*inter/((a.length-1)+(b.length-1));
+}
+const tol=len=>len<=3?0:len<=5?1:len<=8?2:Math.max(3,Math.floor(len*0.34));
+
+// Prépare les mots de chaque entrée (nom complet + alias)
+const SEARCH=[];
+for(const [cat,arr] of Object.entries(MOLECULES))for(const name of arr){
+	const words=new Set([...norm(name).split(" "),...(ALIASES[name]||[]).map(norm)]);
+	const w=[...words].filter(x=>x.length>=2).map(x=>({raw:x,ph:phon(x)}));
+	SEARCH.push({name,cat,w,full:norm(name),fullPh:phon(name)});
+}
+// Score d'un mot saisi contre les mots d'une entrée (null = pas de correspondance)
+function scoreToken(q,qp,entry){
+	let best=null;const upd=s=>{if(best===null||s<best)best=s};
+	const t=tol(qp.length);
+	for(const {raw,ph} of entry.w){
+		if(raw===q)upd(0);
+		else if(raw.startsWith(q))upd(0.5);
+		else if(raw.includes(q)&&q.length>=3)upd(1);
+		if(ph===qp)upd(1.5);
+		else if(ph.startsWith(qp)&&qp.length>=2)upd(2);
+		if(qp.length>=3){
+			const d=dl(qp,ph);if(d<=t)upd(3+d);
+			// saisie partielle avec faute : comparer au début du mot
+			if(qp.length>=4&&ph.length>qp.length){
+				const dp=dl(qp,ph.slice(0,qp.length));if(dp<=Math.min(t,1+(qp.length>6?1:0)))upd(4+dp);
+			}
+			if(qp.length>=5){const s=dice(qp,ph);if(s>=0.6)upd(8-s*3)}
+		}
+	}
+	return best;
+}
+function search(query){
+	const toks=norm(query).split(" ").filter(Boolean);
+	if(!toks.length)return null;
+	const out=[];
+	for(const e of SEARCH){
+		let total=0,ok=true;
+		for(const q of toks){
+			const s=scoreToken(q,phon(q),e);
+			if(s===null){ok=false;break}
+			total+=s;
+		}
+		if(ok)out.push({...e,score:total});
+	}
+	return out.sort((a,b)=>a.score-b.score||a.name.localeCompare(b.name,"fr"));
+}
+/* ===== Affichage ===== */
+function renderList(f=""){
+	const box=$("#list");box.innerHTML="";
+	if(f.trim()){
+		const res=search(f)||[];
+		$("#count").textContent=res.length?res.length+" résultat(s)":"Aucun résultat. Essayez une autre orthographe ou quelques lettres.";
+		const exact=res.filter(r=>r.score<3),approx=res.filter(r=>r.score>=3);
+		const block=(title,arr)=>arr.length&&(box.insertAdjacentHTML("beforeend",
+			`${title?`<h3>${title}</h3>`:""}`+arr.map(r=>`<div class="res ${r.score<3?"":"prob"}"><b>${r.name}</b><br><small>${r.cat}</small></div>`).join("")));
+		block("",exact);block(approx.length&&exact.length?"Orthographes proches":"Résultats approchés",approx);
+		return;
+	}
+	let total=0;
+	for(const [cat,arr] of Object.entries(MOLECULES)){
+		total+=arr.length;
+		const d=document.createElement("details");
+		d.innerHTML=`<summary>${cat} (${arr.length})</summary><div class="chips">${arr.map(n=>`<span class="chip">${n}</span>`).join("")}</div>`;
+		box.appendChild(d);
+	}
+	$("#count").textContent=total+" entrées";
+}
+let qt;$("#q").oninput=e=>{clearTimeout(qt);qt=setTimeout(()=>renderList(e.target.value),120)};
+renderList();
+/* ===== Comparaison locale ===== */
+function compareLocal(text){
+	const toks=[...new Set(norm(text).split(" ").filter(t=>t.length>=3))];
+	const found=new Map();
+	for(const m of INDEX)for(const k of m.keys){
+		for(const t of toks){
+			let lvl=null;
+			if(t===k)lvl="certain";
+			else if(k.length>=5&&Math.abs(t.length-k.length)<=2){
+				const d=lev(t,k),max=k.length>=9?2:1;if(d<=max)lvl="probable";
+			}
+			if(lvl&&(!found.has(m.name)||lvl==="certain"))found.set(m.name,{...m,lvl,token:t});
+		}
+	}
+	return [...found.values()].sort((a,b)=>(a.lvl>b.lvl?-1:1));
+}
+/* ===== Serveur (optionnel) ===== */
+async function compareServer(text,local){
+	if(!CONFIG.SERVER_URL||!navigator.onLine)return null;
+	try{
+		const r=await fetch(CONFIG.SERVER_URL,{method:"POST",headers:{"Content-Type":"application/json"},
+			body:JSON.stringify({text,listVersion:LIST_VERSION,localMatches:local.map(m=>m.name)})});
+		if(!r.ok)throw 0;return await r.json(); // attendu: {matches:[{name,category,confidence,note}]}
+	}catch(e){return null}
+}
+async function runCompare(){
+	const text=$("#txt").value;if(!text.trim()){$("#out").innerHTML="<p>Aucun texte à analyser.</p>";return}
+	const loc=compareLocal(text);let html="";
+	if(!loc.length)html+=`<div class="res ok"><b>Aucune molécule de la liste détectée</b> dans ce texte (analyse locale). Vérifiez la netteté de la photo.</div>`;
+	for(const m of loc)html+=`<div class="res ${m.lvl==="probable"?"prob":""}"><b>${m.name}</b> – ${m.cat}<br><small>${m.lvl==="certain"?"Correspondance exacte":"Correspondance probable"} (« ${m.token} »)</small></div>`;
+	$("#out").innerHTML=html;
+	if($("#srv").checked){
+		$("#out").insertAdjacentHTML("beforeend","<p id='sv'>Analyse serveur…</p>");
+		const s=await compareServer(text,loc);
+		$("#sv").outerHTML=s?.matches?.length?"<h3>Analyse serveur</h3>"+s.matches.map(m=>`<div class="res prob"><b>${m.name}</b> – ${m.category||""}<br><small>${m.note||""} ${m.confidence??""}</small></div>`).join(""):"<p><small>Serveur indisponible ou non configuré : résultat local uniquement.</small></p>";
+	}
+}
+$("#cmp").onclick=runCompare;
+/* ===== Caméra + OCR ===== */
+let stream=null;const vid=$("#vid"),prev=$("#prev");
+function stopCam(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}vid.style.display="none";$("#shot").style.display="none"}
+$("#cam").onclick=async()=>{
+	try{stream=await navigator.mediaDevices.getUserMedia({video:{facetingMode:"environment",facingMode:{ideal:"environment"},width:{ideal:1920}},audio:false});
+		vid.srcObject=stream;await vid.play();vid.style.display="block";prev.style.display="none";$("#shot").style.display="block"}
+	catch(e){$("#status").textContent="Caméra indisponible : utilisez « Choisir / prendre une photo ».";}
+};
+$("#shot").onclick=()=>{
+	prev.width=vid.videoWidth;prev.height=vid.videoHeight;prev.getContext("2d").drawImage(vid,0,0);
+	stopCam();prev.style.display="block";ocr(prev);
+};
+$("#pick").onclick=()=>$("#file").click();
+$("#file").onchange=async e=>{
+	const f=e.target.files[0];if(!f)return;
+	const bmp=await createImageBitmap(f);const sc=Math.min(1,2000/Math.max(bmp.width,bmp.height));
+	prev.width=bmp.width*sc;prev.height=bmp.height*sc;prev.getContext("2d").drawImage(bmp,0,0,prev.width,prev.height);
+	prev.style.display="block";ocr(prev);
+};
+function loadScript(src){return new Promise((ok,ko)=>{if(window.Tesseract)return ok();const s=document.createElement("script");s.src=src;s.onload=ok;s.onerror=ko;document.head.appendChild(s)})}
+async function ocr(canvas){
+	const st=$("#status");
+	try{
+		st.textContent="Chargement du moteur OCR…";await loadScript(CONFIG.TESSERACT_URL);
+		const w=await Tesseract.createWorker(CONFIG.OCR_LANG,1,{logger:m=>{if(m.status)st.textContent=m.status+" "+Math.round((m.progress||0)*100)+"%"}});
+		const {data}=await w.recognize(canvas);await w.terminate();
+		$("#txt").value=data.text;st.textContent="Texte reconnu. Comparaison…";runCompare();st.textContent="Terminé.";
+	}catch(e){st.textContent="OCR indisponible (moteur non encore mis en cache ? connectez-vous une première fois). Vous pouvez saisir le texte à la main.";}
+}
+/* ===== Service worker + mise à jour auto ===== */
+if("serviceWorker"in navigator){
+	addEventListener("load",async()=>{
+		const reg=await navigator.serviceWorker.register("sw.js");
+		const check=()=>navigator.onLine&&reg.update().catch(()=>{});
+		check();setInterval(check,30*60*1000);document.addEventListener("visibilitychange",()=>!document.hidden&&check());
+		let had=!!navigator.serviceWorker.controller;
+		navigator.serviceWorker.addEventListener("controllerchange",()=>{if(had)location.reload();had=true});
+		// préchauffe le cache OCR en ligne
+		if(navigator.onLine)setTimeout(()=>loadScript(CONFIG.TESSERACT_URL).then(()=>Tesseract.createWorker(CONFIG.OCR_LANG)).then(w=>w.terminate()).catch(()=>{}),4000);
+	});
+}
+</script></body></html>
